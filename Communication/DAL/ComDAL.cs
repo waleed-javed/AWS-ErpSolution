@@ -3,6 +3,7 @@ using Amazon.DynamoDBv2.DataModel;
 using Amazon.Lambda.Core;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace Communication.DAL
@@ -89,9 +90,11 @@ namespace Communication.DAL
             [DynamoDBProperty]
             public string PhoneNumber { get; set; } // recorded when created
             [DynamoDBProperty]
-            public bool? IsPhoneNumberVerified { get; set; }
+            public bool? IsPhoneNumberVerified { get; set; } 
             [DynamoDBProperty]
             public DateTime CreatedDate { get; set; } //set when created
+            [DynamoDBProperty]
+            public bool? IsAdmin { get; set; }
             [DynamoDBProperty]
             public List<string> Roles { get; set; } // can add multiple roles
             [DynamoDBProperty]
@@ -99,7 +102,7 @@ namespace Communication.DAL
             [DynamoDBProperty]
             public DateTime LastModifiedDate { get; set; } // last modification record
             
-            // methods
+            ///Class methods
             public UserDataDataRecord()
             {
                     
@@ -111,18 +114,65 @@ namespace Communication.DAL
                 CreatedDate = DateTime.UtcNow;
             }
 
-            public static void setRoles( UserDataDataRecord record,string role)
+            /// <summary>
+            /// Role Allocation API
+            /// </summary>
+            /// <param name="record"></param>
+            /// <param name="role"></param>
+            public static void setRole( UserDataDataRecord record,string role)
             {
                 //setting roles  
                 record.Roles.Add(role);
                 record.Save();
                 
             }
-            public static void removeRoles(UserDataDataRecord record, string role)
+            
+            /// <summary>
+            /// Role Deletion API
+            /// </summary>
+            /// <param name="record"></param>
+            /// <param name="role"></param>
+            public static void removeRole(UserDataDataRecord record, string role)
             {
                 record.Roles.Remove(role);
                 record.Save();
             }
+
+            /// <summary>
+            /// Admin Access checking 
+            /// </summary>
+            /// <param name="record"></param>
+            /// <returns></returns>
+            public static bool IsAdminAccessPrivilege(UserDataDataRecord record)
+            {
+
+                record = QueryUserProfile(record.PK);
+                if(record != null)
+                {
+
+
+                record.Roles.AsParallel().ForAll(role => {
+
+                    if (string.Equals(role, "Admin") || string.Equals(role, "admin"))
+                    {
+                        record.IsAuthorized = true;
+                        record.IsAdmin = true;
+                        record.Save();
+
+                    }
+
+                });
+                    return true;
+                }
+                
+                    return false;
+            }
+
+            /// <summary>
+            /// Query User Profile based on his/her GUID
+            /// </summary>
+            /// <param name="userGuid"></param>
+            /// <returns></returns>
             public static UserDataDataRecord QueryUserProfile(string userGuid)
             {
                 try
@@ -136,6 +186,12 @@ namespace Communication.DAL
                     throw ex;
                 }
             }
+            
+            /// <summary>
+            /// Delete a User via GUID
+            /// </summary>
+            /// <param name="userguid"></param>
+            /// <returns></returns>
             public static bool DeleteUserByGuid(string userguid)
             {
 
@@ -157,6 +213,10 @@ namespace Communication.DAL
                 }
             }
 
+            /// <summary>
+            /// Dynamic Save API
+            /// </summary>
+            /// <returns></returns>
             public bool Save()
             {
                 try
@@ -173,7 +233,11 @@ namespace Communication.DAL
                 }
 
             }
-
+            
+            /// <summary>
+            /// Dynamic Delete API
+            /// </summary>
+            /// <returns></returns>
             public bool Delete()
             {
                 try

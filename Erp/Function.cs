@@ -13,6 +13,8 @@ using System.Net.Http;
 using Amazon.XRay.Recorder.Handlers.AwsSdk;
 using Newtonsoft.Json;
 using System.Text;
+using Amazon.CodeDeploy.Model;
+using Amazon.CodeDeploy;
 
 // Assembly attribute to enable the Lambda function's JSON input to be converted into a .NET class.
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
@@ -52,7 +54,7 @@ namespace Erp
         }
 
 
-        // fetch the details from cache in order to have secure enviorment
+        /// fetch the details from cache in order to have secure enviorment
         public static string GetParameterValue(string parameterName)
         {
             string fullName = $"/ErpSolution/{stageName}/{parameterName}";
@@ -66,7 +68,7 @@ namespace Erp
             return Encoding.UTF8.GetString(Convert.FromBase64String(cacheData.Value));
         }
 
-        //Assistive function to inject headers and return api response, called at multiple places in code file
+        ///Assistive function to inject headers and return api response, called at multiple places in code file
         private static APIGatewayProxyResponse APIResponse(int statusCode, dynamic body)
         {
             Dictionary<string, string> securityHeaders = new Dictionary<string, string> {
@@ -91,32 +93,51 @@ namespace Erp
             return response;
         }
 
+        /// <summary>
+        /// Lambda PreTrafficHook for status report on deployment cycle execution
+        /// </summary>
+        /// <param name="request"></param>
+        /// <param name="context"></param>
+        public void UpdateUserProfileRole(PutLifecycleEventHookExecutionStatusRequest request, ILambdaContext context)
+        {
+            string stageName = Environment.GetEnvironmentVariable("StageName");
+            string newVersion = Environment.GetEnvironmentVariable("NewVersion");
+            context.Logger.Log($"{stageName} - {newVersion}");
+            AmazonCodeDeployClient codeDeployClient = new AmazonCodeDeployClient();
+            request.Status = "Succeeded";
 
+            PutLifecycleEventHookExecutionStatusResponse resp = codeDeployClient.PutLifecycleEventHookExecutionStatusAsync(request).Result;
+
+            context.Logger.Log($"Execution status code: {resp.HttpStatusCode}");
+        }
+
+        /// <summary>
+        ///             A function which will be executed everytime a user role has to be added
+        /// </summary>
+        /// <param name="request"></param>
+        /// <param name="context"></param>
+        /// <returns>
+        ///             API Response with HTTP CODE and STATUS Message
+        /// </returns>
         public APIGatewayProxyResponse UpdateUserProfileRole(APIGatewayProxyRequest request, ILambdaContext context)
         {
            
             try
             {
-                //checking for context and logging to see if have the request properly
+                ///checking for context and logging to see if have the request properly
                 context.Logger.LogLine(JsonConvert.SerializeObject(request));
                 context.Logger.LogLine(JsonConvert.SerializeObject(request.RequestContext.Authorizer.Claims));
                 
-                //mapping
+                ///mapping
                 string phoneNumber = string.Empty;
+                string receipientId = string.Empty;
                 string cUserId =Authentication.Functions.GetUserGUID(request, context);
                 request.RequestContext.Authorizer.Claims.TryGetValue("phone_number", out phoneNumber);
 
-              
-
-                Communication.RequetModel.CommunicationRequest.UserProfileRequest userProfileRequest = JsonConvert.DeserializeObject<Communication.RequetModel.CommunicationRequest.UserProfileRequest>(hFunctions.ConvertToPascalCase(request.Body));
-                if(userProfileRequest.UserID == null || userProfileRequest.Role == null)
-                {
-                    return APIResponse((int)HttpStatusCode.BadRequest, new { message = "Incomplete Parameters" });
-                }
-                // step 0. get profile
+                ///step 0. get profile of the requester
                 Communication.DAL.ComDAL.UserDataDataRecord userProfileRecord = Communication.DAL.ComDAL.UserDataDataRecord.QueryUserProfile(cUserId);
 
-                //need to save phoneNumber if not already saved
+                ///need to save phoneNumber if not already saved
                 if (string.IsNullOrEmpty(userProfileRecord.PhoneNumber))
                 {
                     userProfileRecord.PhoneNumber = phoneNumber;
@@ -124,15 +145,53 @@ namespace Erp
                     udi.Save();
                 }
 
-                if (userProfileRecord.IsAuthorized!=null && userProfileRecord.IsAuthorized == true )
-                {
+                // de-marshalling a request packet into a name-value pairing list witholding all the attributes
+                Communication.RequetModel.CommunicationRequest.UserProfileRequest userProfileRequest = JsonConvert.DeserializeObject<Communication.RequetModel.CommunicationRequest.UserProfileRequest>(hFunctions.ConvertToPascalCase(request.Body));
 
-                    // write role allocation logic here
-                    Communication.DAL.ComDAL.UserDataDataRecord receipientRecord = Communication.DAL.ComDAL.UserDataDataRecord.QueryUserProfile(userProfileRequest.UserID);
-                    /// check for the user that has to be upgraded in role
-                    Communication.DAL.ComDAL.UserDataDataRecord.setRoles(receipientRecord, userProfileRequest.Role);
+
+                userProfileRequest.UserProfileFields.AsParallel().ForAll(attribute => { 
+                
+                    // only authorize is the user is an admin in role
+                    if(attribute.Name == "custom:uid" && attribute.Value != null)
+                    {
+                        if (userProfileRecord.IsAuthorized == null)
+                        {
+                            userProfileRecord.IsAuthorized = Communication.DAL.ComDAL.UserDataDataRecord.IsAdminAccessPrivilege(userProfileRecord);
+                        }
+                        
+                    }
+                    if(attribute.Name == "receipientId" && attribute.Value != null)
+                    {
+                        receipientId = attribute.Value;
+                    }
+                });
+
+                ///handling roles differently as it can be more than one
+                List<string> roles = new List<string>();
+                bool updateUserRoles = false;
+               
+                userProfileRequest.UserProfileFields.ForEach(attr => { 
+                    if(attr.Name == nameof(userProfileRecord.Roles))
+                    {
+                        roles.Add(attr.Value);
+                        updateUserRoles = true;
+                        return;
+                    }
+                });
+                    
+                if (updateUserRoles)
+                {
+                    /// FOR THE SAKE OF THIS PROTOTYPE PROJECT I AM ASSUMING THE USER WILL ALWAYS PASS RECEIPIENT ID 
+                    /// IF THE ID IS not passed, the system will most likely crash as no null handling is done for this particular case.
+                    Communication.DAL.ComDAL.UserDataDataRecord uddr =Communication.DAL.ComDAL.UserDataDataRecord.QueryUserProfile(receipientId);
+
+                    uddr.Roles = roles; //adding all the roles
+                    uddr.Save();
+
                     return APIResponse((int)HttpStatusCode.OK, new { message = "Updated Successfully." });
+
                 }
+
 
                 return APIResponse((int)HttpStatusCode.Forbidden, new { message = "Not Authorized Request." });
             }
@@ -143,7 +202,14 @@ namespace Erp
             }
         }
 
-
+        /// <summary>
+        ///             A function which will be executed everytime a user role has to be removed
+        /// </summary>
+        /// <param name="request"></param>
+        /// <param name="context"></param>
+        /// <returns>
+        ///             API Response with HTTP CODE and STATUS Message
+        /// </returns>
         public APIGatewayProxyResponse DeleteUserProfileRole(APIGatewayProxyRequest request, ILambdaContext context)
         {
 
@@ -152,26 +218,57 @@ namespace Erp
                 //checking for context and logging to see if have the request properly
                 context.Logger.LogLine(JsonConvert.SerializeObject(request));
                 context.Logger.LogLine(JsonConvert.SerializeObject(request.RequestContext.Authorizer.Claims));
+                string receipientId = string.Empty;
                 string cUserId = Authentication.Functions.GetUserGUID(request, context);
 
                 Communication.RequetModel.CommunicationRequest.UserProfileRequest userProfileRequest = JsonConvert.DeserializeObject<Communication.RequetModel.CommunicationRequest.UserProfileRequest>(hFunctions.ConvertToPascalCase(request.Body));
-                if (userProfileRequest.UserID == null || userProfileRequest.Role == null)
-                {
-                    return APIResponse((int)HttpStatusCode.BadRequest, new { message = "Incomplete Parameters" });
-                }
-                // step 0. get profile
+
+                ///step 0. get profile of the requester
                 Communication.DAL.ComDAL.UserDataDataRecord userProfileRecord = Communication.DAL.ComDAL.UserDataDataRecord.QueryUserProfile(cUserId);
 
+                userProfileRequest.UserProfileFields.AsParallel().ForAll(attribute => {
 
-                if (userProfileRecord.IsAuthorized != null && userProfileRecord.IsAuthorized == true)
+                    // only authorize is the user is an admin in role
+                    if (attribute.Name == "custom:uid" && attribute.Value != null)
+                    {
+                        if (userProfileRecord.IsAuthorized == null)
+                        {
+                            userProfileRecord.IsAuthorized = Communication.DAL.ComDAL.UserDataDataRecord.IsAdminAccessPrivilege(userProfileRecord);
+                        }
+
+                    }
+                    if (attribute.Name == "receipientId" && attribute.Value != null)
+                    {
+                        receipientId = attribute.Value;
+                    }
+                });
+
+                ///handling roles differently as it can be more than one
+                List<string> roles = new List<string>();
+                bool updateUserRoles = false;
+
+                userProfileRequest.UserProfileFields.ForEach(attr => {
+                    if (attr.Name == nameof(userProfileRecord.Roles))
+                    {
+                        roles.Remove(attr.Value);
+                        updateUserRoles = true;
+                        return;
+                    }
+                });
+
+                if (updateUserRoles)
                 {
+                    /// FOR THE SAKE OF THIS PROTOTYPE PROJECT I AM ASSUMING THE USER WILL ALWAYS PASS RECEIPIENT ID 
+                    /// IF THE ID IS not passed, the system will most likely crash as no null handling is done for this particular case.
+                    Communication.DAL.ComDAL.UserDataDataRecord uddr = Communication.DAL.ComDAL.UserDataDataRecord.QueryUserProfile(receipientId);
 
-                    // write role allocation logic here
-                    Communication.DAL.ComDAL.UserDataDataRecord receipientRecord = Communication.DAL.ComDAL.UserDataDataRecord.QueryUserProfile(userProfileRequest.UserID);
-                    /// check for the user that has to be upgraded in role
-                    Communication.DAL.ComDAL.UserDataDataRecord.removeRoles(receipientRecord, userProfileRequest.Role);
-                    return APIResponse((int)HttpStatusCode.OK, new { message = "Role Removed Successfully." });
+                    uddr.Roles = roles; //adding all the roles
+                    uddr.Save();
+
+                    return APIResponse((int)HttpStatusCode.OK, new { message = "Roles Updated Successfully." });
+
                 }
+
 
                 return APIResponse((int)HttpStatusCode.Forbidden, new { message = "Not Authorized Request." });
             }

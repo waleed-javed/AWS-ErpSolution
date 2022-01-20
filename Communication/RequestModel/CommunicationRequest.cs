@@ -7,12 +7,17 @@ namespace Communication.RequetModel
     public class CommunicationRequest
     {
 
+
         public class UserProfileRequest
         {
+            public List<UserProfileRequestItem> UserProfileFields { get; set; }
+            }
 
-            public string Role{ get; set; }
-            public string UserID { get; set; }
-
+        public class UserProfileRequestItem
+        {
+            public string Value { get; set; }
+            public string Name { get; set; }
         }
+
     }
 }
