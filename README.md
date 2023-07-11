@@ -1,6 +1,9 @@
 # AWS-ErpSolution
-> NOTE:
-A PROTOTYPE PROJECT AND WILL NOT WORK IF YOU DEPLOY DIRECTLY TO AWS
+<p align="center">
+  <a href="https://github.com/waleed-javed/AWS-ErpSolution">
+    <img src="https://imgix.datadoghq.com/img/solutions/aws-hero.png?ch=Width&fit=max&auto=compress&auto=format" alt="Logo">
+  </a>
+</p>
 
 ## PreReqs
 - You will first require a S3 Bucket that has to be configures accordingly
